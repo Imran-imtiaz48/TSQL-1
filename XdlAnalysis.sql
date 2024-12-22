@@ -710,27 +710,70 @@ BEGIN
 DROP TABLE #resc
 END
 
-SELECT QUOTENAME(ROW_NUMBER() OVER(ORDER BY resc.Nod)) + ' ' + resc.Nod.value('local-name(.)', 'SYSNAME') +  ISNULL(' ' + QUOTENAME('objectname=' + obct.objectname +ISNULL(', indexname=' + QUOTENAME(resc.Nod.value('(@indexname)[1]', 'SYSNAME')) ,''), ')'), '') resc,
-obct.objectname,
-eon.Nod.value('(@id)[1]', 'sysname') id_own, ISNULL(eon.Nod.value('(@mode)[1]', 'sysname') + ' own', 'own') lock_own,
-wai.Nod.value('(@id)[1]', 'sysname') id_wai, ISNULL(wai.Nod.value('(@mode)[1]', 'sysname') + ' wait', 'wait') + ISNULL(' ' + NULLIF(QUOTENAME(wai.Nod.value('(@requestType)[1]', 'sysname'), ')'), '(wait)'), '') lock_wai
+SELECT 
+    QUOTENAME(ROW_NUMBER() OVER(ORDER BY resc.Nod)) + ' ' + resc.Nod.value('local-name(.)', 'SYSNAME') +
+    ISNULL(
+        ' ' + QUOTENAME(
+            'objectname=' + obct.objectname + 
+            ISNULL(', indexname=' + QUOTENAME(resc.Nod.value('(@indexname)[1]', 'SYSNAME')), '')
+        ), 
+        ''
+    ) AS resc,
+    obct.objectname,
+    eon.Nod.value('(@id)[1]', 'SYSNAME') AS id_own, 
+    ISNULL(eon.Nod.value('(@mode)[1]', 'SYSNAME') + ' own', 'own') AS lock_own,
+    wai.Nod.value('(@id)[1]', 'SYSNAME') AS id_wai, 
+    ISNULL(
+        wai.Nod.value('(@mode)[1]', 'SYSNAME') + ' wait', 'wait') + 
+        ISNULL(' ' + NULLIF(QUOTENAME(wai.Nod.value('(@requestType)[1]', 'SYSNAME'), ')'), '(wait)')
+    ) AS lock_wai
 INTO #resc
-FROM @xdl.nodes('deadlock/resource-list/*')  resc(Nod)
+FROM @xdl.nodes('deadlock/resource-list/*') resc(Nod)
 OUTER APPLY resc.Nod.nodes('owner-list/owner') eon(Nod)
-OUTER APPLY resc.Nod.nodes('waiter-list/waiter') wai(Nod)   
+OUTER APPLY resc.Nod.nodes('waiter-list/waiter') wai(Nod)
 CROSS APPLY ( 
-	SELECT ISNULL(QUOTENAME(PARSENAME(resc.Nod.value('(@objectname)[1]', 'SYSNAME'),3)) + '.','') 
-		+ ISNULL(QUOTENAME(PARSENAME(resc.Nod.value('(@objectname)[1]', 'SYSNAME'),2)) + '.', '')
-		+ QUOTENAME(PARSENAME(resc.Nod.value('(@objectname)[1]', 'SYSNAME'),1)) 
-) obct(objectname)
+    SELECT 
+        ISNULL(QUOTENAME(PARSENAME(resc.Nod.value('(@objectname)[1]', 'SYSNAME'), 3)) + '.', '') +
+        ISNULL(QUOTENAME(PARSENAME(resc.Nod.value('(@objectname)[1]', 'SYSNAME'), 2)) + '.', '') +
+        QUOTENAME(PARSENAME(resc.Nod.value('(@objectname)[1]', 'SYSNAME'), 1)) 
+) obct(objectname);
 
-SELECT @SqlStatement = N'
-SELECT pvot.*' + CASE WHEN @Action = 2 THEN '' ELSE '--' END + ',' + REPLACE(@Cols, ']', '.resc]') + '
+
+SET @SqlStatement = N'
+SELECT 
+    pvot.*' + 
+    CASE 
+        WHEN @Action = 2 THEN '' 
+        ELSE '--' 
+    END + ',' + 
+    REPLACE(@Cols, ']', '.resc]') + '
 FROM (
-SELECT resc.resc, cox.idc, resc.lock_own [value] FROM #resc resc JOIN (SELECT id, idc FROM #cox GROUP BY id, idc) cox ON resc.id_own = cox.id
-UNION
-SELECT resc.resc, cox.idc, resc.lock_wai [value] FROM #resc resc JOIN (SELECT id, idc FROM #cox GROUP BY id, idc) cox ON resc.id_wai = cox.id
+    SELECT 
+        resc.resc, 
+        cox.idc, 
+        resc.lock_own AS [value] 
+    FROM #resc resc 
+    JOIN (SELECT id, idc FROM #cox GROUP BY id, idc) cox 
+        ON resc.id_own = cox.id
+    UNION
+    SELECT 
+        resc.resc, 
+        cox.idc, 
+        resc.lock_wai AS [value] 
+    FROM #resc resc 
+    JOIN (SELECT id, idc FROM #cox GROUP BY id, idc) cox 
+        ON resc.id_wai = cox.id
 ) cox
-PIVOT( MAX([value]) FOR idc IN (' + @Cols + ') ) pvot 
-' + CASE WHEN @Action = 2 THEN '' ELSE '--' END + ' LEFT JOIN ##abcde cc ON pvot.resc = cc.resc'
+PIVOT (
+    MAX([value]) 
+    FOR idc IN (' + @Cols + ') 
+) pvot 
+' + 
+CASE 
+    WHEN @Action = 2 THEN '' 
+    ELSE '--' 
+END + ' 
+LEFT JOIN ##abcde cc 
+    ON pvot.resc = cc.resc';
+
 EXEC sp_executesql @SqlStatement
